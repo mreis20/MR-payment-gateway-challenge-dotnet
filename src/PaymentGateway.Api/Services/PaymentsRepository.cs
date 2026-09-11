@@ -1,18 +1,35 @@
-﻿using PaymentGateway.Api.Models.Responses;
+using PaymentGateway.Api.Models.Responses;
 
 namespace PaymentGateway.Api.Services;
 
 public class PaymentsRepository
 {
-    public List<PostPaymentResponse> Payments = new();
-    
-    public void Add(PostPaymentResponse payment)
+    private readonly object _gate = new();
+    private readonly Dictionary<Guid, PostPaymentResponse> _payments = [];
+    private readonly HashSet<string> _usedKeys = new(StringComparer.Ordinal);
+
+    public bool TryAddIdempotencyKey(string key)
     {
-        Payments.Add(payment);
+        lock (_gate)
+        {
+            // Checking and adding together prevents simultaneous duplicate submissions.
+            return _usedKeys.Add(key);
+        }
     }
 
-    public PostPaymentResponse Get(Guid id)
+    public void Add(PostPaymentResponse payment)
     {
-        return Payments.FirstOrDefault(p => p.Id == id);
+        lock (_gate)
+        {
+            _payments.Add(payment.Id, payment);
+        }
+    }
+
+    public PostPaymentResponse? Get(Guid id)
+    {
+        lock (_gate)
+        {
+            return _payments.GetValueOrDefault(id);
+        }
     }
 }
