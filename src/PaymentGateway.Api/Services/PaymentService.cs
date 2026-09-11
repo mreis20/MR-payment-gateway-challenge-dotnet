@@ -15,14 +15,6 @@ public class PaymentService(
 {
     public async Task<PaymentResult> ProcessAsync(PostPaymentRequest request, string? key, string traceId)
     {
-        // Replays must survive time-dependent validation changes, such as expiry.
-        PaymentResult? replay = repository.Replay(key, request, traceId);
-        if (replay != null)
-        {
-            LogExistingAttempt(replay, traceId);
-            return replay;
-        }
-
         Dictionary<string, string[]> errors = validator.Validate(request, key);
         if (errors.Count > 0)
         {
@@ -32,11 +24,10 @@ public class PaymentService(
             return new PaymentResult.Failed(PaymentError.InvalidRequest, traceId, errors);
         }
 
-        PaymentResult? existing = repository.TryBegin(key!, request, traceId);
-        if (existing != null)
+        if (!repository.TryAddIdempotencyKey(key!))
         {
-            LogExistingAttempt(existing, traceId);
-            return existing;
+            logger.LogInformation("Payment rejected because the idempotency key was already used, TraceId: {TraceId}", traceId);
+            return new PaymentResult.Failed(PaymentError.IdempotencyConflict, traceId);
         }
 
         long started = Stopwatch.GetTimestamp();
@@ -69,9 +60,9 @@ public class PaymentService(
             result = new PaymentResult.Failed(PaymentError.OtherError, traceId);
         }
 
-        repository.Complete(key!, result);
         if (result is PaymentResult.Completed completed)
         {
+            repository.Add(completed.Payment);
             logger.LogInformation("Payment {PaymentId} completed as {Status} in {ElapsedMs} ms, TraceId: {TraceId}",
                 completed.Payment.Id, completed.Payment.Status, Stopwatch.GetElapsedTime(started).TotalMilliseconds, traceId);
         }
@@ -82,19 +73,6 @@ public class PaymentService(
         }
 
         return result;
-    }
-
-    private void LogExistingAttempt(PaymentResult result, string traceId)
-    {
-        if (result is PaymentResult.Completed completed)
-        {
-            logger.LogInformation("An existing payment: {PaymentId} executed, no payments were made, TraceId: {TraceId}", completed.Payment.Id, traceId);
-        }
-        else if (result is PaymentResult.Failed failed)
-        {
-            logger.LogInformation("Request returned {Error}, TraceId: {TraceId}; result trace {ResultTraceId}",
-                failed.Error, traceId, failed.TraceId);
-        }
     }
 
     public PostPaymentResponse? Get(Guid id, string traceId)

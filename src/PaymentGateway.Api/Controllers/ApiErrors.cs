@@ -12,8 +12,7 @@ public static class ApiErrors
         (int status, string title, string code) = failure.Error switch
         {
             PaymentError.InvalidRequest => (400, "Payment request is invalid", "invalid_request"),
-            PaymentError.IdempotencyConflict => (409, "Idempotency key was used with different payment details", "idempotency_conflict"),
-            PaymentError.IdempotencyInProgress => (409, "Payment is still processing; retry the same key later", "idempotency_in_progress"),
+            PaymentError.IdempotencyConflict => (409, "Idempotency key has already been used", "idempotency_conflict"),
             PaymentError.BankUnavailable => (503, "Bank is unavailable", "bank_unavailable"),
             _ => (500, "Any other error", "any_other_error")
         };
