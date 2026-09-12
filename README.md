@@ -1,6 +1,6 @@
-# Instructions for candidates
+# Instructions
 
-This is the .NET version of the Payment Gateway challenge. If you haven't already read this [README.md](https://github.com/cko-recruitment/) on the details of this exercise, please do so now. 
+This is the .NET version of the Payment Gateway challenge. Please read the general instructions for this challenge on [README.md](https://github.com/cko-recruitment/). 
 
 ## Template structure
 ```
@@ -17,49 +17,53 @@ PaymentGateway.sln
 
 Feel free to change the structure of the solution, use a different test library etc.
 
-## Running the solution
+## About this solution
 
-Run the following from the repository root. Prerequisites: a .NET SDK capable of
-building `net8.0`, the .NET 8 ASP.NET Core runtime, and Docker for the bank simulator.
-The gateway runs locally; Compose hosts only the provided bank simulator.
+The [assessment requirements](https://github.com/cko-recruitment/.github/blob/main/profile/README.md)
+cover the payment fields, validation rules and bank simulator behavior. The notes
+below describe how to run this implementation and the choices beyond those requirements.
+
+## Run locally
+
+Install the .NET 8 SDK and Docker with Compose, then start the Docker engine.
+For VS Code debugging, also install C# Dev Kit.
+
+From the repository root, start the bank simulator first:
 
 ```bash
-docker-compose up -d
-dotnet restore PaymentGateway.sln
-dotnet build PaymentGateway.sln --no-restore
-dotnet dev-certs https --trust
+docker-compose up
+```
+
+With Docker Compose v2, the equivalent command is `docker compose up`. Wait for
+the simulator to start on `http://localhost:8080`, and leave it running while using
+the API. Compose runs only the provided bank simulator.
+
+Then press **F5** in VS Code and select the `PaymentGateway.Api` project/profile
+if prompted. The original launch profile enables automatic browser opening at
+[Swagger](https://localhost:7092/swagger). If the development certificate is not
+trusted, run `dotnet dev-certs https --trust` once.
+
+To run the API from another terminal instead:
+
+```bash
 dotnet run --project src/PaymentGateway.Api
 ```
 
-The launch profile exposes HTTPS at `https://localhost:7092`, HTTP at
-`http://localhost:5067` (redirected to HTTPS), and Swagger at
-`https://localhost:7092/swagger` in Development. On newer Docker installations,
-`docker compose` is equivalent to `docker-compose`.
+This starts the API without opening a browser; open the Swagger link yourself.
+For automatic browser opening from the terminal, use
+`dotnet watch --project src/PaymentGateway.Api run`.
 
-If an existing container from another checkout already owns the name
-`bank_simulator`, run this checkout's simulator with a distinct name (ports
-8080 and 2525 must be free):
+The API uses HTTPS on port 7092 and redirects HTTP on port 5067 to HTTPS.
+Its bank URL defaults to `http://localhost:8080/` and can be overridden using
+`Bank__BaseUrl`. The bank timeout is fixed at five seconds in `Program.cs`.
 
-```bash
-docker compose run -d --rm --name payment_gateway_bank_local --service-ports bank_simulator
-# When finished:
-docker stop payment_gateway_bank_local
-```
+API logs appear in the terminal or VS Code debug output used to start it. Stop the
+API with Ctrl+C or VS Code's Stop button, and stop the bank with Ctrl+C in its
+terminal. Run `docker-compose down` to remove the simulator container and network.
 
-Bank configuration is in `src/PaymentGateway.Api/appsettings.json`:
+## Try the API
 
-| Setting | Default | Environment override |
-|---|---|---|
-| Base URL | `http://localhost:8080/` | `Bank__BaseUrl` |
-| Timeout | 5 seconds | Fixed in `Program.cs` |
-
-There is no custom startup validation; an invalid URL fails when the bank client
-is created or used. If hosting the gateway in a container later,
-use the bank's service hostname (`http://bank_simulator:8080/`) instead of localhost.
-
-## API examples
-
-Process a payment (amount is in minor units):
+Submit a payment:
 
 ```bash
 curl -i https://localhost:7092/api/payments \
@@ -68,7 +72,7 @@ curl -i https://localhost:7092/api/payments \
   -d '{"cardNumber":"2222405343248877","expiryMonth":12,"expiryYear":2099,"currency":"GBP","amount":1050,"cvv":"012"}'
 ```
 
-An authorized or declined payment returns `200 OK` with this body (ID varies):
+`POST /api/payments` returns 200 for an authorized or declined payment. Example:
 
 ```json
 {
@@ -82,89 +86,130 @@ An authorized or declined payment returns `200 OK` with this body (ID varies):
 }
 ```
 
-Retrieve it with `GET /api/payments/{id}` using the returned ID. Each
-`Idempotency-Key` may be used for only one valid submission. Reusing it returns
-`409 idempotency_conflict`, whether the details are identical or different and
-whether the first bank call is running, completed or failed. No result is replayed.
-Invalid input returns `400` before key registration and does not consume a new
-key. A changed invalid request also returns `400`; it cannot modify the original
-payment. Use a new key for an intentional new payment. Cards ending in `8`
-exercise decline; cards ending in `0` exercise bank unavailability.
+Use the returned ID with `GET /api/payments/{id}` to retrieve the same fields.
+The gateway generates the payment GUID; the bank authorization code is not exposed.
+Swagger has no explicit response annotations, so use this example and the table
+below for the response contract.
 
-| Response | Meaning |
+| HTTP status | Gateway behavior |
 |---|---|
-| POST 200 | Authorized or declined payment stored; response status is a string |
-| GET 200 | Stored payment, same safe response fields |
-| 400 | Invalid input/key or bank 400 with a safe error message |
-| 404 | Payment not found or invalid payment ID, with an explanatory JSON body |
-| 409 | `idempotency_conflict`: the key has already been used |
+| 400 | Validation/key errors or bank 400: `invalid_request` |
+| 404 | Unknown payment GUID: `Payment not found`; invalid GUID or unmatched route: `Not Found` |
+| 409 | Reused key: `idempotency_conflict` |
 | 415 | Unsupported request content type |
-| 503 | Bank returned 503 Service Unavailable |
-| 500 | Any other error: unexpected bank status/body, connection failure, timeout, or unexpected gateway exception |
+| 503 | Bank 503: `bank_unavailable` |
+| 500 | Other bank/processing failures, including connection failure, timeout or invalid bank response: `any_other_error` |
 
-Payment-processing errors use `application/problem+json` with HTTP `status`,
-`title`, `traceId`, and a stable `code`. Payment-rule validation errors include
-`paymentStatus: "Rejected"` and field `errors`. Malformed JSON, invalid JSON types,
-and unsupported content types use ASP.NET Core default errors. GET failures use
-Problem Details JSON: an invalid payment ID does not match the GUID route and
-returns 404 with `Not Found`; an unknown valid ID returns 404 with
-`Payment not found` and explains that no payment exists with the supplied ID.
-An unmatched route returns 404 with a built-in Problem Details JSON body. Framework errors
-do not promise the payment-specific fields or a particular `type` URI.
-Local validation failures create no payment and do not consume a new key.
-Once the key is registered before bank dispatch, it stays used for the process
-lifetime, including after bank errors. The repository stores used keys and
-completed payment records; it does not store request fingerprints or error results.
+Service errors use `application/problem+json` with `status`, `title`, `code` and
+`traceId`. Validation errors also contain field `errors`. The current
+`invalid_request` response includes `paymentStatus: "Rejected"` for both local
+validation and bank 400; only local validation guarantees no bank call occurred.
+Bank failures do not create retrievable payments.
 
-The simulator's documented HTTP outcomes are preserved: bank 200 produces gateway
-200 with `Authorized` or `Declined`, bank 400 produces gateway 400 using the
-existing `invalid_request` response, and bank 503 produces gateway 503 with
-`bank_unavailable`. The current `invalid_request` envelope includes `Rejected`
-for both local validation and bank 400; only local validation guarantees no bank
-call occurred. No bank failure has a retrievable payment ID.
-All other bank/processing failures use HTTP 500 with `code: "any_other_error"`
-and `title: "Any other error"`. Unexpected exceptions outside payment processing
-use the framework's generic 500 Problem Details response. A timeout can mean the
-bank processed the payment. Reusing its key returns 409 without another bank call;
-switching to a new key would be a separate submission and could duplicate it.
+Malformed JSON/types, unsupported content types, GET failures and exceptions
+outside payment processing use framework Problem Details bodies without guaranteed
+payment-specific fields. An authorized bank response without a non-empty
+`authorization_code` is treated as an invalid bank response.
 
-The bank generates the `authorization_code`. An authorized bank response must
-include a non-empty code; otherwise it is treated as any other error. The
-merchant-facing response remains the seven fields required by the assessment;
-the bank code is not returned or used as the gateway payment ID.
+### Validation choices
 
-Swagger is available for trying the endpoints, but the controller has no explicit
-response annotations, so its generated response documentation is limited. The
-response example and status table above describe the implemented contract.
-Required fields and cross-field validation rules are enforced by the validator;
-nullable request properties in Swagger do not make these fields optional at runtime.
+Beyond the linked rules, this implementation accepts only GBP, USD and EUR;
+amounts from 1 to 2147483647; ASCII digits; and expiry years from 1 to 9999.
+A card remains valid through its expiry month in UTC. No normalization or Luhn
+check is added. Nullable request properties let the validator identify missing
+input; they do not make required fields optional.
+
+### Duplicate-submission protection
+
+This is additional assessment scope. The caller generates and retains a mandatory
+`Idempotency-Key` for each submission. It need not be a GUID: keys are case-sensitive,
+1–128 ASCII letters, digits, hyphens or underscores.
+
+The service validates first, then atomically checks and registers the key before
+calling the bank. Invalid input returns 400 without consuming a new key. Reuse
+with valid input returns 409, even if the details changed or the first bank call
+is still running or failed. Keys stay used; there is no fingerprint check or replay.
+
+A retry must retain its key. If the original response is lost, a retry cannot
+recover it with this design. Generating a new key makes a separate submission and
+can duplicate a payment whose bank outcome was uncertain.
 
 ## Tests
 
-The default suite requires no running API, Docker, external bank, or database:
+Tests use a fake bank and do not require the API or simulator to be running.
+Run the suite with the .NET SDK:
 
 ```bash
 dotnet test PaymentGateway.sln --logger "console;verbosity=normal"
 ```
 
-Generate a browser report, including individual results and failure details:
+Individual results appear in the terminal; failures produce a non-zero exit code.
+For a browser report:
 
 ```bash
 dotnet test PaymentGateway.sln \
-  --logger "console;verbosity=normal" \
   --logger "html;LogFileName=test-results.html" \
   --results-directory ./TestResults
-open ./TestResults/test-results.html
 ```
 
-On platforms other than macOS, open the HTML file using your browser. VS Code
-users can also use C# Dev Kit's Testing view after building the solution.
+Open `TestResults/test-results.html` in your browser. C# Dev Kit also provides
+individual results in VS Code's Testing view.
 
-If discovery reports no tests after switching package versions, run
-`dotnet clean PaymentGateway.sln` and rebuild to remove stale adapter DLLs.
-The existing package versions have been retained. A package-audit `NU1900`
-warning caused by an unreachable machine-level NuGet feed does not indicate
-a test failure; ensure configured package sources are reachable for restore/audit.
+| Category | Coverage and regression prevented |
+|---|---|
+| Request validation | Missing fields, boundaries, currency, expiry and key format prevent invalid input reaching the bank |
+| Service behavior | Concurrent submissions and key reuse after success/failure prevent duplicate bank calls; invalid input leaves a new key available |
+| Bank client | Wire format, status/body handling and timeout checks prevent contract drift and invented decisions |
+| Persistence/retrieval | Authorized/declined records, distinct IDs and missing records protect correct lookup |
+| API integration | HTTP bodies/statuses, logs, sensitive-data exclusion and caller disconnects protect observable API behavior |
 
-See [DESIGN.md](DESIGN.md) for responsibilities, assumptions, alternatives,
-trade-offs, test coverage, and the limits of in-memory idempotency.
+Time is controlled through `TimeProvider`; concurrency tests coordinate requests
+without sleeps. Tests exercise behavior rather than dictionary or lock internals.
+
+## Design and trade-offs
+
+```text
+PaymentsController
+  -> PaymentService
+       -> PaymentRequestValidator -> TimeProvider
+       -> PaymentsRepository
+       -> BankClient -> HttpClient -> bank simulator
+```
+
+The controller handles HTTP and `ApiErrors` maps service failures. The service
+coordinates validation, duplicate protection, bank dispatch and storage. The bank
+client owns bank serialization and response handling. Concrete classes keep this
+small solution straightforward; interfaces for every class would add little benefit.
+
+The repository holds a payment dictionary and a used-key set under one lock.
+Checking and adding a key together prevents two simultaneous requests from both
+reaching the bank; a separate validator existence check would race. Bank I/O runs
+outside the lock. Separate POST/GET response classes preserve independent endpoint
+models at the cost of repeated fields. Stored response objects are mutable; current
+handlers do not modify them after storage.
+
+The bank client has no retries or redirects and finishes dispatched work even if
+the caller disconnects, bounded by its timeout. This avoids implicit resubmission,
+but does not resolve an uncertain bank outcome. Built-in Problem Details avoids
+custom middleware at the cost of different framework and service error fields.
+
+Hosting follows the assessment setup: Docker runs the provided bank simulator,
+and the .NET SDK runs the API locally. The original Compose configuration,
+simulator files and local Swagger launch settings are retained.
+
+Application logs include outcomes, elapsed bank-attempt time, validation reasons,
+duplicate rejection and GET found/not-found results with request traces. They omit
+full card numbers, CVVs, raw keys and bank bodies. Framework error-body trace IDs
+may differ from service log trace IDs. Expected bank exceptions currently collapse
+to one error category, limiting diagnostics.
+
+## Limits and future work
+
+Payments and used keys live in memory: restart loses both, instances do not share
+state, and memory grows with submissions. Duplicate protection applies only per key
+within one running instance.
+
+Production extensions include durable storage and reconciliation, merchant-scoped
+keys and authentication, retention/rate limits, TLS hosting and distributed
+observability. Bank diagnostics could add safe exception categories and upstream
+status without exposing raw messages or changing the public error contract.
