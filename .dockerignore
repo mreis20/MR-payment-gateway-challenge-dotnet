@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!src/
+!src/PaymentGateway.Api/
+!src/PaymentGateway.Api/**
+**/bin
+**/obj
+**/*.user

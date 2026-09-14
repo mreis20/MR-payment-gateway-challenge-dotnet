@@ -25,6 +25,10 @@ below describe how to run this implementation and the choices beyond those requi
 
 ## Run locally
 
+Choose either workflow below, running commands from the repository root.
+
+### Option 1: Bank in Docker, API with the .NET 8 SDK
+
 Install the .NET 8 SDK and Docker with Compose, then start the Docker engine.
 For VS Code debugging, also install C# Dev Kit.
 
@@ -61,9 +65,38 @@ API logs appear in the terminal or VS Code debug output used to start it. Stop t
 API with Ctrl+C or VS Code's Stop button, and stop the bank with Ctrl+C in its
 terminal. Run `docker-compose down` to remove the simulator container and network.
 
+### Option 2: API and bank together in Docker
+
+With Docker Compose v2 installed and the Docker engine running:
+
+```bash
+docker compose --profile app up --build -d
+```
+
+This starts two containers with one command. The API waits for the bank's health
+check before starting. No local .NET SDK or certificate setup is needed; the first
+build needs internet access to download .NET images and NuGet packages.
+
+Open [Docker Swagger](http://localhost:8081/swagger) yourself. The API is at
+`http://localhost:8081/api/payments`. This option uses **HTTP**, while option 1
+retains local HTTPS and VS Code's automatic browser launch. Port 8080 is the bank.
+If API port 8081 is occupied, set `API_PORT` to a free port in a local `.env` file.
+
+View API logs and stop both containers with:
+
+```bash
+docker compose logs -f api
+docker compose --profile app down
+```
+
+To switch back to option 1 while keeping the bank running, use
+`docker compose stop api`, then start the API locally. The two API instances have
+separate in-memory payments and keys; stopping/restarting an instance loses its data.
+
 ## Try the API
 
-Submit a payment:
+Submit a payment with option 1. For option 2, replace the URL with
+`http://localhost:8081/api/payments`:
 
 ```bash
 curl -i https://localhost:7092/api/payments \
@@ -193,9 +226,19 @@ the caller disconnects, bounded by its timeout. This avoids implicit resubmissio
 but does not resolve an uncertain bank outcome. Built-in Problem Details avoids
 custom middleware at the cost of different framework and service error fields.
 
-Hosting follows the assessment setup: Docker runs the provided bank simulator,
-and the .NET SDK runs the API locally. The original Compose configuration,
-simulator files and local Swagger launch settings are retained.
+The default hosting workflow follows the assessment: Docker runs the bank and the
+.NET SDK runs the API locally. An optional Compose `app` profile adds the API
+without changing the default bank-only command or local Swagger launch settings.
+This keeps both workflows in one file; the trade-off is an explicit profile flag
+when starting or stopping the full Docker setup. The bank health check uses Node
+already present in the simulator and verifies its port is ready, not payment correctness.
+
+A multi-stage Dockerfile builds with the .NET 8 SDK and runs published API output
+with the ASP.NET 8 runtime as a non-root user. Tests and SDK tools are excluded from
+the runtime image. Unlike a prebuilt published image, the first run requires a build.
+Docker disables HTTPS redirection through one configuration switch, which defaults
+to enabled for local development. HTTP avoids certificate setup for the local Docker
+demo; production TLS hosting remains outside scope. No proxy or new package is added.
 
 Application logs include outcomes, elapsed bank-attempt time, validation reasons,
 duplicate rejection and GET found/not-found results with request traces. They omit
